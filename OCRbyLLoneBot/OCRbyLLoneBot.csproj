@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="TouchSocket" Version="4.1.12" />
+    <PackageReference Include="TouchSocket.Core" Version="4.1.12" />
+    <PackageReference Include="TouchSocket.Http" Version="4.1.12" />
+    <PackageReference Include="TouchSocket.JsonRpc" Version="4.1.12" />
+    <PackageReference Include="TouchSocket.Rpc" Version="4.1.12" />
+  </ItemGroup>
+
+</Project>
