@@ -1,18 +1,17 @@
 ﻿using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
-using System.Net.WebSockets;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using TouchSocket.Core;
 using TouchSocket.Http.WebSockets;
 using TouchSocket.Sockets;
+using Sunny.UI.Win32;
 
 namespace OCRbyLLoneBot
 {
-    public partial class Form1 : Form
+    public partial class Form1 : Sunny.UI.UIForm
     {
         private ConcurrentDictionary<string, RecMsgMode> ocrResmsgmode = new ConcurrentDictionary<string, RecMsgMode>();
         WebSocketClient webSocket = new WebSocketClient();
@@ -23,8 +22,11 @@ namespace OCRbyLLoneBot
 
         private void Form1_Load(object sender, EventArgs e)
         {
-            CreateSocket();
-            //await SendActivationRequest("424531638745335609955640716633530643857085064476161468457574401");
+            this.Style = Sunny.UI.UIStyle.Purple;
+            //LLonebot机器人
+            //CreateSocket();
+
+            //var result = await SendActivationRequest("424531638745335609955640716633530643857085064476161468457574401");
         }
 
         private async void CreateSocket()
@@ -428,7 +430,8 @@ namespace OCRbyLLoneBot
                                 },
                                 echo = ""
                             };
-                            string msg1 = JsonSerializer.Serialize(msgPayload,new JsonSerializerOptions {
+                            string msg1 = JsonSerializer.Serialize(msgPayload, new JsonSerializerOptions
+                            {
                                 WriteIndented = false,
                                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
                             });
@@ -647,6 +650,63 @@ namespace OCRbyLLoneBot
             {
                 Console.WriteLine("释放WebSocket资源异常：" + ex.Message);
             }
+        }
+
+        private async void textBox1_Click(object sender, EventArgs e)
+        {
+            string text = Clipboard.GetText();
+            if (text == null) return;
+            if (string.IsNullOrEmpty(CleanIID(text)))
+            {
+                this.textBox1.Text = "剪贴板内容不合法，请复制有效的IID后再点击";
+                return;
+            }
+            var result = IidValidator.ValidateIID(text);
+            if (!result.Valid)
+            {
+                Console.WriteLine($"错误: {result.Error}");
+                this.textBox1.Text = $"错误: {result.Error}";
+                foreach (var block in result.FailedBlocks)
+                {
+                    Console.WriteLine($"失败区块 {block.Index}: {block.Value}");
+                    this.textBox1.Text += "  $\"失败区块 {block.Index}: {block.Value}\"";
+                }
+                return;
+            }
+            this.textBox1.Text = text;
+            if (string.IsNullOrEmpty(textBox1.Text)) return;
+
+            //"424531638745335609955640716633530643857085064476161468457574401"
+            var jsonstr = await SendActivationRequest(textBox1.Text);
+            if (jsonstr == null) return;
+            JsonDocument jdjson = JsonDocument.Parse(jsonstr);
+            // 配置 JSON 序列化选项（启用格式化、缩进、处理中文等）
+            var options = new JsonSerializerOptions
+            {
+                // 核心：启用格式化（缩进、换行）
+                WriteIndented = true,
+                // 可选：设置缩进空格数（默认 4 个空格）
+                // IndentSize = 2,
+                // 可选：处理中文不转义
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+                // 可选：忽略 null 值（避免输出多余的 null 字段）
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+            };
+
+            // 序列化并格式化输出
+            string formattedJson = JsonSerializer.Serialize(jdjson.RootElement, options);
+            this.textBox2.Text = formattedJson;
+        }
+
+        private void button1_Click(object sender, EventArgs e)
+        {
+            this.textBox1.Clear();
+            this.textBox2.Clear();
+        }
+
+        private void button2_Click(object sender, EventArgs e)
+        {
+            Clipboard.SetText(this.textBox2.Text);
         }
     }
 }
