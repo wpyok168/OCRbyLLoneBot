@@ -1,10 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Threading.Tasks;
 
 namespace OCRbyLLoneBot
 {
@@ -20,6 +16,11 @@ namespace OCRbyLLoneBot
         /// <returns>Base64URL编码字符串</returns>
         private static string Base64UrlEncode(byte[] input)
         {
+            if (input == null)
+            {
+                throw new ArgumentNullException(nameof(input));
+                // 或者返回空字符串：return string.Empty;
+            }
             // 标准Base64编码 → 替换为Base64URL格式 → 移除末尾填充符=
             return Convert.ToBase64String(input)
                 .Replace('+', '-')
@@ -66,8 +67,8 @@ namespace OCRbyLLoneBot
             {
                 kty = "EC",          // 密钥类型：椭圆曲线
                 crv = "P-256",       // 曲线类型
-                x = Base64UrlEncode(publicKeyParams.Q.X), // X坐标（Base64URL编码）
-                y = Base64UrlEncode(publicKeyParams.Q.Y)  // Y坐标（Base64URL编码）
+                x = Base64UrlEncode(publicKeyParams.Q.X!), // X坐标（Base64URL编码）
+                y = Base64UrlEncode(publicKeyParams.Q.Y!)  // Y坐标（Base64URL编码）
             };
 
             // 序列化为无缩进的JSON（符合JWT规范）
