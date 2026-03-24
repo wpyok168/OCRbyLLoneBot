@@ -7,6 +7,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationIcon>微软图标.ico</ApplicationIcon>
+    <Authors>福建-兮</Authors>
   </PropertyGroup>
 
   <ItemGroup>
@@ -29,6 +30,21 @@
     <PackageReference Include="TouchSocket.Http" Version="4.1.12" />
     <PackageReference Include="TouchSocket.JsonRpc" Version="4.1.12" />
     <PackageReference Include="TouchSocket.Rpc" Version="4.1.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="Properties\Settings.Designer.cs">
+      <DesignTimeSharedInput>True</DesignTimeSharedInput>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Settings.settings</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Properties\Settings.settings">
+      <Generator>SettingsSingleFileGenerator</Generator>
+      <LastGenOutput>Settings.Designer.cs</LastGenOutput>
+    </None>
   </ItemGroup>
 
 </Project>

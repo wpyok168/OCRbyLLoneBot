@@ -677,6 +677,7 @@ namespace OCRbyLLoneBot
             if (string.IsNullOrEmpty(textBox1.Text)) return;
 
             //"424531638745335609955640716633530643857085064476161468457574401"
+            this.textBox2.Text = "正在获取。。。，请稍候，若长期无反应，请联系作者。";
             var jsonstr = await SendActivationRequest(textBox1.Text);
             if (jsonstr == null) return;
             JsonDocument jdjson = JsonDocument.Parse(jsonstr);
