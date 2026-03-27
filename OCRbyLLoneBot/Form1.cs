@@ -654,7 +654,7 @@ namespace OCRbyLLoneBot
 
         private async void textBox1_Click(object sender, EventArgs e)
         {
-            string text = Clipboard.GetText();
+            string text = Clipboard.GetText().Replace("-", "").Replace(" ","");
             if (text == null) return;
             if (string.IsNullOrEmpty(CleanIID(text)))
             {
