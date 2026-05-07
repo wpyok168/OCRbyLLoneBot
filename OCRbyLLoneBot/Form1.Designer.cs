@@ -35,6 +35,9 @@
             label2 = new Label();
             button1 = new Button();
             button2 = new Button();
+            toolStrip1 = new ToolStrip();
+            toolStripLabel1 = new ToolStripLabel();
+            toolStrip1.SuspendLayout();
             SuspendLayout();
             // 
             // textBox1
@@ -91,10 +94,27 @@
             button2.UseVisualStyleBackColor = true;
             button2.Click += button2_Click;
             // 
+            // toolStrip1
+            // 
+            toolStrip1.Dock = DockStyle.Bottom;
+            toolStrip1.Items.AddRange(new ToolStripItem[] { toolStripLabel1 });
+            toolStrip1.Location = new Point(0, 493);
+            toolStrip1.Name = "toolStrip1";
+            toolStrip1.Size = new Size(752, 25);
+            toolStrip1.TabIndex = 6;
+            toolStrip1.Text = "toolStrip1";
+            // 
+            // toolStripLabel1
+            // 
+            toolStripLabel1.Name = "toolStripLabel1";
+            toolStripLabel1.Size = new Size(96, 22);
+            toolStripLabel1.Text = "toolStripLabel1";
+            // 
             // Form1
             // 
             AutoScaleMode = AutoScaleMode.None;
             ClientSize = new Size(752, 518);
+            Controls.Add(toolStrip1);
             Controls.Add(button2);
             Controls.Add(button1);
             Controls.Add(label2);
@@ -110,6 +130,8 @@
             ZoomScaleRect = new Rectangle(15, 15, 689, 454);
             FormClosing += Form1_FormClosing;
             Load += Form1_Load;
+            toolStrip1.ResumeLayout(false);
+            toolStrip1.PerformLayout();
             ResumeLayout(false);
             PerformLayout();
         }
@@ -122,5 +144,7 @@
         private Label label2;
         private Button button1;
         private Button button2;
+        private ToolStrip toolStrip1;
+        private ToolStripLabel toolStripLabel1;
     }
 }

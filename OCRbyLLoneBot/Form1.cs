@@ -22,9 +22,10 @@ namespace OCRbyLLoneBot
 
         private void Form1_Load(object sender, EventArgs e)
         {
+            this.toolStripLabel1.Text = "机器人模式，ws://127.0.0.1:7780";
             this.Style = Sunny.UI.UIStyle.Purple;
             //LLonebot机器人
-            //CreateSocket();
+            CreateSocket();
 
             //var result = await SendActivationRequest("424531638745335609955640716633530643857085064476161468457574401");
         }
@@ -98,7 +99,16 @@ namespace OCRbyLLoneBot
                 }
                 //return EasyTask.CompletedTask;
             };
-            await webSocket.ConnectAsync();
+            try
+            {
+                await webSocket.ConnectAsync();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"WebSocket连接失败: {ex.Message}使用本地模式");
+                this.toolStripLabel1.Text = "本地模式";
+            }
+            
         }
 
         private async Task MsgAction(JsonDocument jsonDocument)
