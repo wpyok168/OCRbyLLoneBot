@@ -8,6 +8,7 @@ using TouchSocket.Core;
 using TouchSocket.Http.WebSockets;
 using TouchSocket.Sockets;
 using Sunny.UI.Win32;
+using System.Text.Json.Nodes;
 
 namespace OCRbyLLoneBot
 {
@@ -507,6 +508,11 @@ namespace OCRbyLLoneBot
                 string dpopToken = DpopTokenGenerator.GenerateDpopToken(apiPath);
                 int numberOfDigits = iid.Length / 9;
 
+                var data = await GetTokenDataAsync();
+                string token = data["access_token"]!.ToString();
+                //dynamic data = await GetTokenDataDynamicAsync();
+                //string token = data.access_token; // ✅ 和 JS 写法一样
+
                 // 构建JSON（改用序列化，避免拼接错误）
                 var requestBody = new
                 {
@@ -529,7 +535,8 @@ namespace OCRbyLLoneBot
                 requestBuilder.AppendLine($"POST {apiPath} HTTP/1.1");
                 requestBuilder.AppendLine($"Host: {host}");
                 requestBuilder.AppendLine("Content-Type: application/json");
-                requestBuilder.AppendLine("Authorization: Bearer govUrlID");
+                //requestBuilder.AppendLine("Authorization: Bearer govUrlID");
+                requestBuilder.AppendLine($"Authorization: Bearer {token}");
                 requestBuilder.AppendLine($"DPoP: {dpopToken}");
                 requestBuilder.AppendLine("x-session-id: app_mmsj2c31_x1nrlz06b");
                 //requestBuilder.AppendLine($"Referer: https://{host}/{govUrlConfig}/activate");
@@ -643,6 +650,49 @@ namespace OCRbyLLoneBot
             }
 
             return null;
+        }
+
+        public static async Task<JsonNode> GetTokenDataAsync()
+        {
+            using var httpClient = new HttpClient();
+            httpClient.Timeout = TimeSpan.FromSeconds(10);
+
+            try
+            {
+                // 直接获取原始 JSON 字符串
+                string json = await httpClient.GetStringAsync("https://cidtoken.x2ray.cfd");
+
+                // 动态解析（不需要模型）
+                JsonNode data = JsonNode.Parse(json)!;
+
+                // 校验：和你 JS 逻辑完全一样
+                if (data == null || data["access_token"] == null || string.IsNullOrEmpty(data["access_token"]!.ToString()))
+                {
+                    throw new Exception("无效的 Token 数据");
+                }
+
+                return data;
+            }
+            catch (TaskCanceledException)
+            {
+                throw new Exception("请求超时");
+            }
+            catch (HttpRequestException ex)
+            {
+                throw new Exception("网络请求失败：" + ex.Message);
+            }
+            catch (JsonException)
+            {
+                throw new Exception("解析 JSON 失败");
+            }
+        }
+
+        public static async Task<dynamic> GetTokenDataDynamicAsync()
+        {
+            using var httpClient = new HttpClient();
+            httpClient.Timeout = TimeSpan.FromSeconds(10);
+            string json = await httpClient.GetStringAsync("https://cidtoken.x2ray.cfd");
+            return JsonSerializer.Deserialize<dynamic>(json)!;
         }
 
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
