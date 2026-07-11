@@ -443,18 +443,27 @@ namespace OCRbyLLoneBot
         {
             if (string.IsNullOrWhiteSpace(iid))
                 throw new Exception("无效的 IID");
+
             string host = "visualsupport.microsoft.com";
             int port = 443;
             string apiPath = "/api/productActivation/validateIID";
+
+            // 声明TcpClient为局部变量，并用using确保自动释放
             using var client = new TouchSocket.Sockets.TcpClient();
             var responseBuilder = new StringBuilder();
-            var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously); // 异步续传，避免线程阻塞
+
             try
             {
                 string dpopToken = DpopTokenGenerator.GenerateDpopToken(apiPath);
                 int numberOfDigits = iid.Length / 9;
+
                 var data = await GetTokenDataAsync();
                 string token = data["id_token"]!.ToString();
+                //dynamic data = await GetTokenDataDynamicAsync();
+                //string token = data.access_token; // ✅ 和 JS 写法一样
+
+                // 构建JSON（改用序列化，避免拼接错误）
                 var requestBody = new
                 {
                     IID = iid,
@@ -470,45 +479,77 @@ namespace OCRbyLLoneBot
                 };
                 string jsonBody = JsonSerializer.Serialize(requestBody);
                 byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
+
+                // 构建HTTP请求头
                 StringBuilder requestBuilder = new StringBuilder();
                 requestBuilder.AppendLine($"POST {apiPath} HTTP/1.1");
                 requestBuilder.AppendLine($"Host: {host}");
                 requestBuilder.AppendLine("Content-Type: application/json");
+                //requestBuilder.AppendLine("Authorization: Bearer govUrlID");
                 requestBuilder.AppendLine($"Authorization: Bearer {token}");
                 requestBuilder.AppendLine($"DPoP: {dpopToken}");
                 requestBuilder.AppendLine("x-session-id: app_mmsj2c31_x1nrlz06b");
+                //requestBuilder.AppendLine($"Referer: https://{host}/{govUrlConfig}/activate");
                 requestBuilder.AppendLine($"Content-Length: {bodyBytes.Length}");
                 requestBuilder.AppendLine("Connection: close");
                 requestBuilder.AppendLine();
                 byte[] headerBytes = Encoding.UTF8.GetBytes(requestBuilder.ToString());
+
+                // 解析IP（优先IPv4）
                 var ipAddresses = await Dns.GetHostAddressesAsync(host);
                 var targetIp = ipAddresses.First(ip => ip.AddressFamily == AddressFamily.InterNetwork);
+
+                // 配置TcpClient（关键：独立配置，不共享WebSocket的容器/日志）
                 var tcpConfig = new TouchSocketConfig()
                     .SetRemoteIPHost($"{targetIp}:{port}")
                     .SetClientSslOption(options =>
                     {
+                        // 忽略证书验证（访问公网HTTPS建议保留，避免证书问题）
                         options.CertificateValidationCallback = (sender, cert, chain, errors) => true;
+                        // 关闭证书吊销检查
                         options.CheckCertificateRevocation = false;
+                        // 微软接口不需要客户端证书，注释掉（如果是你的私有接口需要则打开）
+                        // options.ClientCertificates = new X509Certificate2Collection() { new X509Certificate2("client.pfx", "pwd") };
+                        // SSL协议：访问微软接口不能设为None，指定Tls12/Tls13（否则握手失败）
                         options.SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13;
+                        // 目标主机必须和域名一致（微软接口是visualsupport.microsoft.com）
                         options.TargetHost = host;
                     })
-                    .ConfigureContainer(container => { })
-                    .ConfigurePlugins(plugins => { });
+                    // 核心：禁用全局容器，完全隔离资源
+                    .ConfigureContainer(container =>
+                    {
+                        // 什么都不做，让它生成一个全新的独立容器
+                        // 或者手动清空注册（如果TouchSocket版本支持）
+                        // container.RemoveRegisteredTypes();
+                    })
+                    // 禁用日志共享，避免和WebSocket日志冲突
+                    .ConfigurePlugins(plugins =>
+                    {
+                        // 不添加任何插件，保持空
+                    });
+
+                // 注册回调（仅针对当前TcpClient）
                 client.Received = (c, e) =>
                 {
                     var mes = e.Memory.Span.ToString(Encoding.UTF8);
                     responseBuilder.Append(mes);
                     return EasyTask.CompletedTask;
                 };
+
                 client.Closed = (c, e) =>
                 {
+                    // 仅完成当前TcpClient的任务，不影响全局
                     tcs.TrySetResult(responseBuilder.ToString());
                     return EasyTask.CompletedTask;
                 };
+
+                // 连接并发送数据
                 await client.SetupAsync(tcpConfig);
                 await client.ConnectAsync();
                 await client.SendAsync(headerBytes);
                 await client.SendAsync(bodyBytes);
+
+                // 30秒超时保护
                 if (await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(30))) == tcs.Task)
                 {
                     string fullResponse = await tcs.Task;
@@ -523,16 +564,18 @@ namespace OCRbyLLoneBot
             catch (Exception ex)
             {
                 Console.WriteLine($"激活请求异常：{ex.Message}");
+                // 确保任务完成，避免死等
                 tcs.TrySetException(ex);
                 throw;
             }
             finally
             {
+                // 显式关闭并释放TcpClient，不影响WebSocket
                 if (client.Online)
                 {
                     await client.CloseAsync();
                 }
-                client.Dispose();
+                client.Dispose(); // 强制释放资源
             }
         }
 
