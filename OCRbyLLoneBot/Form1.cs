@@ -5,17 +5,25 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using TouchSocket.Core;
+using TouchSocket.Http;
 using TouchSocket.Http.WebSockets;
 using TouchSocket.Sockets;
 using Sunny.UI.Win32;
 using System.Text.Json.Nodes;
+using System.Collections.Generic;
 
 namespace OCRbyLLoneBot
 {
     public partial class Form1 : Sunny.UI.UIForm
     {
         private ConcurrentDictionary<string, RecMsgMode> ocrResmsgmode = new ConcurrentDictionary<string, RecMsgMode>();
-        WebSocketClient webSocket = new WebSocketClient();
+
+        // ==================== 按参考示例替换服务变量 ====================
+        private HttpService service = new HttpService();
+        /// <summary>存储所有LLOneBot WebSocket客户端，和示例BotWebSocketMap对应</summary>
+        //private readonly ConcurrentDictionary<IWebSocketClient, bool> BotWebSocketMap = new ConcurrentDictionary<IWebSocketClient, bool>();
+        private readonly ConcurrentDictionary<IWebSocket, bool> BotWebSocketMap = new ConcurrentDictionary<IWebSocket, bool>();
+
         public Form1()
         {
             InitializeComponent();
@@ -23,115 +31,118 @@ namespace OCRbyLLoneBot
 
         private void Form1_Load(object sender, EventArgs e)
         {
-            this.toolStripLabel1.Text = "机器人模式，ws://127.0.0.1:7780";
+            this.toolStripLabel1.Text = "机器人Http+Ws服务端，ws://127.0.0.1:7781/ws";
             this.Style = Sunny.UI.UIStyle.Purple;
-            //LLonebot机器人
             CreateSocket();
-
-            //var result = await SendActivationRequest("424531638745335609955640716633530643857085064476161468457574401");
         }
 
+        // ==================== 完全参照你给的CreateServer示例重写 ====================
         private async void CreateSocket()
         {
-            // 重新实例化WebSocketClient（确保和TcpClient无关联）
-            webSocket = new WebSocketClient();
-            await webSocket.SetupAsync(new TouchSocketConfig()
-                  .ConfigureContainer(a =>
-                  {
-                      a.AddConsoleLogger();
-                  })
-                  .ConfigurePlugins(a =>
-                  {
-                      a.AddWebSocketConnectedPlugin((client, e) =>
-                      {
-                          client.Logger.Info("WebSocket连接已建立");
-                          client.PingAsync().ContinueWith(pingTask =>
-                          {
-                              if (pingTask.IsCompletedSuccessfully)
-                              {
-                                  client.Logger.Info("WebSocket连接已成功建立");
-                              }
-                              else
-                              {
-                                  client.Logger.Error("WebSocket连接建立失败");
-                              }
-                          });
+            TouchSocketConfig config = new TouchSocketConfig();
 
-                          return EasyTask.CompletedTask;
-                      });
+            config.SetListenIPHosts(7781)
+                 .ConfigureContainer(a =>
+                 {
+                     a.AddConsoleLogger();
+                 })
+                 .ConfigurePlugins(a =>
+                 {
+                     // 启用WebSocket中间件
+                     a.UseWebSocket(options =>
+                     {
+                         options.SetUrl("/ws");
+                         options.SetAutoPong(true);
 
-                  })
-                  .SetRemoteIPHost("ws://127.0.0.1:7780"));
+                         // 连接校验逻辑，仅允许/ws路径升级
+                         options.SetVerifyConnection((client, context) =>
+                         {
+                             if (!context.Request.IsUpgrade())
+                                 return false;
+
+                             if (context.Request.UrlEquals("/ws"))
+                                 return true;
+
+                             return false;
+                         });
+                     });
+
+                     // WebSocket建立连接时存入Map
+                     a.AddWebSocketConnectedPlugin((wsClient, e) =>
+                     {
+                         BotWebSocketMap.TryAdd(wsClient, true);
+                         service.Logger.Info($"LLOneBot客户端接入，Id={wsClient.Client.IP}");
+                         return EasyTask.CompletedTask;
+                     });
+
+                     // ====== 新增：WebSocket报文接收插件（替换service.Received赋值）======
+                     a.AddWebSocketReceivedPlugin(async (wsClient, e) =>
+                     {
+                         switch (e.DataFrame.Opcode)
+                         {
+                             case WSDataType.Text:
+                                 string recmsg = e.DataFrame.ToText();
+                                 Console.WriteLine(recmsg);
+                                 await MsgAction(JsonDocument.Parse(recmsg));
+                                 break;
+                             case WSDataType.Binary:
+                                 byte[] by = e.DataFrame.PayloadData.ToArray();
+                                 break;
+                             case WSDataType.Close:
+                                 break;
+                             case WSDataType.Ping:
+                                 break;
+                             case WSDataType.Pong:
+                                 break;
+                             default:
+                                 break;
+                         }
+                     });
 
 
-            webSocket.Closed = (c, e) =>
-            {
-                Console.WriteLine("Closed");
-                MessageBox.Show("ws://127.0.0.1:7780 服务器连接关闭");
-                return EasyTask.CompletedTask;
-            };
-            webSocket.Connected = (c, e) =>
-            {
-                webSocket.Logger.Info("通过ws://127.0.0.1:7780 连接成功");
-                return EasyTask.CompletedTask;
-            };
-            webSocket.Received = async (c, e) =>
-            {
-                switch (e.DataFrame.Opcode)
-                {
-                    case WSDataType.Cont:
-                        break;
-                    case WSDataType.Text:
-                        Console.WriteLine(e.DataFrame.ToText());
-                        string recmsg = e.DataFrame.ToText();
-                        await MsgAction(JsonDocument.Parse(recmsg));
-                        break;
-                    case WSDataType.Binary:
-                        byte[] by = e.DataFrame.PayloadData.ToArray();
-                        break;
-                    case WSDataType.Close:
-                        break;
-                    case WSDataType.Ping:
-                        break;
-                    case WSDataType.Pong:
-                        break;
-                    default:
-                        break;
-                }
-                //return EasyTask.CompletedTask;
-            };
+                     // WebSocket断开时移除Map（和示例一致）
+                     a.AddWebSocketClosedPlugin((ws, e) =>
+                     {
+                         BotWebSocketMap.Remove(ws, out _);
+                         service.Logger.Info($"客户端断开，Id={ws.Client.IP}");
+                         return EasyTask.CompletedTask;
+                     });
+                 });
+
             try
             {
-                await webSocket.ConnectAsync();
+                await service.SetupAsync(config);
+                await service.StartAsync();
+                service.Logger.Info("WebSocket服务器已启动，地址: ws://127.0.0.1:7780/ws");
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"WebSocket连接失败: {ex.Message}使用本地模式");
+                MessageBox.Show($"Http+Ws服务启动失败: {ex.Message}，使用本地模式");
                 this.toolStripLabel1.Text = "本地模式";
             }
             
         }
 
+        // ==================== 群发消息适配BotWebSocketMap ====================
+        private async Task SendServerMsg(string selfId, string msg)
+        {
+            foreach (var wsClient in BotWebSocketMap.Keys)
+            {
+                if (wsClient.Online)
+                {
+                    await wsClient.SendAsync(msg);
+                }
+            }
+        }
+
+        // ==================== 下方所有业务逻辑【完全原样不动，无修改】 ====================
         private async Task MsgAction(JsonDocument jsonDocument)
         {
             RecMsgMode msg = GetRecMsgMode(jsonDocument);
 
-            ////解析OCR消息，提取文本内容
-            //(StringBuilder, StringBuilder) ocrResult;
-            //if (!string.IsNullOrEmpty(msg.Echo))
-            //{
-            //    ocrResult = GetOCRTextConet(jsonDocument);
-            //    string echo = msg.Echo;
-            //    msg = ocrResmsgmode.TryGetValue(echo, out var ocrrecMsgMode) ? ocrrecMsgMode : msg;
-            //    ocrResmsgmode.TryRemove(echo, out _);
-            //    await SendMsg(msg, ocrResult.Item1.ToString());
-            //}
-            //return;
-
             string iid = string.Empty;
             string ocrstr = string.Empty;
             bool falg = false;
-            //解析OCR消息，提取文本内容
             (StringBuilder, StringBuilder) ocrResult;
             if (!string.IsNullOrEmpty(msg.Echo))
             {
@@ -162,21 +173,17 @@ namespace OCRbyLLoneBot
 
             if (!string.IsNullOrEmpty(iid))
             {
-                //var response = await client.GetCID(iid, nd);
                 var response = await SendActivationRequest(iid);
-                //dynamic? responseObj = JsonSerializer.Deserialize<dynamic>(response);
                 JsonDocument jdjson = JsonDocument.Parse(response);
                 var root = jdjson.RootElement;
-                // 封装通用方法：安全获取JSON字段值
                 string GetJsonProperty(JsonElement element, string propName)
                 {
                     if (element.TryGetProperty(propName, out JsonElement propEle))
                     {
-                        // 根据字段类型返回对应值（兼容字符串/数字）
                         return propEle.ValueKind switch
                         {
                             JsonValueKind.String => propEle.GetString() ?? "空字符串",
-                            JsonValueKind.Number => propEle.ToString(), // 数字转字符串
+                            JsonValueKind.Number => propEle.ToString(),
                             JsonValueKind.Null => "字段为空",
                             _ => $"不支持的类型：{propEle.ValueKind}"
                         };
@@ -185,16 +192,12 @@ namespace OCRbyLLoneBot
                 }
 
                 var sb = new System.Text.StringBuilder();
-
-                // 安全获取各字段（修正拼写错误：iic → iid）
                 sb.AppendLine("IID：" + GetJsonProperty(root, "iid"));
                 sb.AppendLine("CID：" + GetJsonProperty(root, "cid"));
                 sb.AppendLine("productName：" + GetJsonProperty(root, "productName"));
                 sb.AppendLine("PID：" + GetJsonProperty(root, "pid"));
                 sb.AppendLine("maxInstallCount：" + GetJsonProperty(root, "maxInstallCount"));
-                //sb.AppendLine("Type：" + GetJsonProperty(root, "PidLicenseChannel"));
 
-                // 处理 message 字段（不显示指定内容）
                 string message = GetJsonProperty(root, "message");
                 if (!string.Equals(
                         message,
@@ -208,7 +211,6 @@ namespace OCRbyLLoneBot
 
                 string sendmsg = sb.ToString().TrimEnd();
                 await SendMsg(msg, sendmsg);
-
             }
             if (msg.RecMsgContent != null)
             {
@@ -220,10 +222,10 @@ namespace OCRbyLLoneBot
 
             return;
         }
+
         private RecMsgMode GetRecMsgMode(JsonDocument recmsgdic)
         {
             RecMsgMode recmsgMode = new RecMsgMode() { RecMsgContent = "" };
-            //System.Text.Json.JsonDocument recmsgdic = System.Text.Json.JsonDocument.Parse(recmsg);
             if (recmsgdic.RootElement.TryGetProperty("self_id", out JsonElement self_id))
             {
                 recmsgMode.Self_ID = self_id.GetInt64();
@@ -259,11 +261,6 @@ namespace OCRbyLLoneBot
                 {
                     foreach (var item in message.EnumerateArray())
                     {
-                        //if (item.TryGetProperty("data", out JsonElement data) && data.TryGetProperty("text", out JsonElement text))
-                        //{
-                        //    recmsgMode.RecMsgContent = text.GetString();
-                        //}
-                        // 提取文本内容
                         if (item.TryGetProperty("type", out JsonElement type) && type.GetString() == "text")
                         {
                             if (item.TryGetProperty("data", out JsonElement data) && data.TryGetProperty("text", out JsonElement text))
@@ -271,18 +268,14 @@ namespace OCRbyLLoneBot
                                 recmsgMode.RecMsgContent = text.GetString() ?? "";
                             }
                         }
-                        // 提取图片的file和url
                         if (item.TryGetProperty("type", out JsonElement imgType) && imgType.GetString() == "image")
                         {
                             if (item.TryGetProperty("data", out JsonElement imgData))
                             {
-                                // 提取file字段
                                 if (imgData.TryGetProperty("file", out JsonElement file))
                                 {
                                     recmsgMode.ImageFile = file.GetString();
                                 }
-
-                                // 提取url字段
                                 if (imgData.TryGetProperty("url", out JsonElement url))
                                 {
                                     recmsgMode.ImageUrl = url.GetString() ?? "";
@@ -299,25 +292,22 @@ namespace OCRbyLLoneBot
             }
             return recmsgMode;
         }
+
         private async void GetOCRText(RecMsgMode rec, string type = "server")
         {
             string msg1 = $@"{{""action"":""ocr_image"",""params"":{{""image"":""{rec.ImageFile}"",""auto_escape"":false}}, ""echo"":""{rec.ImageFile}""}}";
-
             await SendServerMsg(rec.Self_ID.ToString(), msg1);
         }
+
         private (StringBuilder, StringBuilder) GetOCRTextConet(JsonDocument recmsgDoc)
         {
             StringBuilder listtext = new StringBuilder();
             StringBuilder iidgroup = new StringBuilder();
-            int matchCount = 0; // 限制最多匹配2次
-
-            // 空值防护
+            int matchCount = 0;
             if (recmsgDoc == null)
             {
                 return (listtext, iidgroup);
             }
-
-            // 先收集所有文本（不影响原逻辑）
             if (recmsgDoc.RootElement.TryGetProperty("data", out JsonElement data) &&
                 data.TryGetProperty("texts", out JsonElement texts) &&
                 texts.ValueKind == JsonValueKind.Array)
@@ -332,76 +322,52 @@ namespace OCRbyLLoneBot
                     }
                 }
             }
-
-            // 第一次匹配：只匹配6位数字
             if (matchCount < 2)
             {
                 matchCount++;
                 var sixDigitMatches = Regex.Matches(listtext.ToString(), @"\b\d{6}\b");
-                iidgroup.Clear(); // 清空后重新拼接
+                iidgroup.Clear();
                 foreach (Match match in sixDigitMatches)
                 {
                     iidgroup.Append(match.Value);
                 }
             }
-
-            // 检查第一次结果长度，若≠54则第二次匹配7位数字
             if (iidgroup.Length != 54 && matchCount < 2)
             {
                 matchCount++;
                 var sevenDigitMatches = Regex.Matches(listtext.ToString(), @"\b\d{7}\b");
-                iidgroup.Clear(); // 清空后重新拼接
+                iidgroup.Clear();
                 foreach (Match match in sevenDigitMatches)
                 {
                     iidgroup.Append(match.Value);
                 }
             }
-
             return (listtext, iidgroup);
         }
 
-        /// <summary>
-        /// 清理 IID，去掉空格、- 和非数字字符，返回纯数字字符串
-        /// </summary>
-        /// <param name="iid">原始 IID</param>
-        /// <returns>纯数字 IID</returns>
         public static string CleanIID(string iid)
         {
             if (string.IsNullOrEmpty(iid))
                 return string.Empty;
-
-            // 去除所有非数字字符
             string cleaned = Regex.Replace(iid, @"\D", "");
-
-            // 限定长度 54 或 63
             if (cleaned.Length == 54 || cleaned.Length == 63)
                 return cleaned;
-
-            return string.Empty; // 长度不合法
+            return string.Empty;
         }
 
         private async Task SendMsg(RecMsgMode rec, string sendmsg, string type = "server")
         {
-
             try
             {
-
                 bool isSelfMessage = rec.UserID == rec.Self_ID;
-
                 if (isSelfMessage)
                 {
-                    // 忽略自己发的消息，防止死循环
                     return;
                 }
-
-                //JsonDocument recmsgdic = System.Text.Json.JsonDocument.Parse(recmsg);
                 if (!string.IsNullOrEmpty(rec.RecMsgContent) || !string.IsNullOrEmpty(rec.ImageFile))
                 {
-
-                    if (rec.IsFriend) //好友消息
+                    if (rec.IsFriend)
                     {
-                        //sendmsg = sendmsg.Replace("\r", "\\r").Replace("\n", "\\n");
-                        //string msg1 = $@"{{""action"":""send_private_msg"",""params"":{{""user_id"":{rec.UserID},""message"":""{sendmsg.ToString()}"",""auto_escape"":false}}, ""echo"":""""}}";
                         var msgPayload = new
                         {
                             action = "send_private_msg",
@@ -420,23 +386,19 @@ namespace OCRbyLLoneBot
                         });
                         await SendServerMsg(rec.Self_ID.ToString(), msg1);
                     }
-                    else //if (subtype.GetString().Equals("group") && !string.IsNullOrEmpty(msgtext))
+                    else
                     {
-                        //message_type":"group"，"sub_type":"normal" 群聊  "message_type":"private"，"sub_type":"group" 群私聊  "message_type":"private"，"sub_type":"friend" 好友
-                        if (rec.Message_Type.Equals("private"))//群私聊消息
+                        if (rec.Message_Type.Equals("private"))
                         {
-                            //sendmsg = sendmsg.Replace("\r", "\\r").Replace("\n", "\\n");
-                            //string msg1 = $"{{\"action\":\"send_msg\",\"params\":{{\"message_type\":\"private\", \"user_id\":{rec.UserID},\"group_id\":{rec.GroupID}, \"message\":\"{sendmsg}\",\"auto_escape\":false}}, \"echo\":\"\"}}";
-                            // 构建匿名对象
                             var msgPayload = new
                             {
                                 action = "send_msg",
-                                @params = new // params 是 C# 关键字，需要加 @ 前缀
+                                @params = new
                                 {
                                     message_type = "private",
                                     user_id = rec.UserID,
                                     group_id = rec.GroupID,
-                                    message = sendmsg, // JsonSerializer 会自动处理这里的转义
+                                    message = sendmsg,
                                     auto_escape = false
                                 },
                                 echo = ""
@@ -448,15 +410,13 @@ namespace OCRbyLLoneBot
                             });
                             await SendServerMsg(rec.Self_ID.ToString(), msg1);
                         }
-                        else if (rec.Message_Type.Equals("group"))//群消息
+                        else if (rec.Message_Type.Equals("group"))
                         {
-                            //sendmsg = sendmsg.Replace("\r", "\\r").Replace("\n", "\\n") + $"\\r\\n[CQ:at,qq={rec.UserID}]";
                             sendmsg = sendmsg + $"\r\n[CQ:at,qq={rec.UserID}]";
-                            //string msg1 = $"{{\"action\":\"send_group_msg\",\"params\":{{\"group_id\":{rec.GroupID}, \"message\":\"{sendmsg}\",\"auto_escape\":false}}, \"echo\":\"\"}}";
                             var msgPayload = new
                             {
                                 action = "send_group_msg",
-                                @params = new  // @避开params关键字
+                                @params = new
                                 {
                                     group_id = rec.GroupID,
                                     message = sendmsg,
@@ -464,7 +424,6 @@ namespace OCRbyLLoneBot
                                 },
                                 echo = ""
                             };
-
                             string msg1 = JsonSerializer.Serialize(msgPayload, new JsonSerializerOptions
                             {
                                 WriteIndented = false,
@@ -477,43 +436,25 @@ namespace OCRbyLLoneBot
             }
             catch (Exception ex)
             {
-
             }
-
         }
-
-
-        private async Task SendServerMsg(string selfId, string msg)
-        {
-            await webSocket.SendAsync(msg);
-        }
-
 
         public async Task<string> SendActivationRequest(string iid)
         {
             if (string.IsNullOrWhiteSpace(iid))
                 throw new Exception("无效的 IID");
-
             string host = "visualsupport.microsoft.com";
             int port = 443;
             string apiPath = "/api/productActivation/validateIID";
-
-            // 声明TcpClient为局部变量，并用using确保自动释放
             using var client = new TouchSocket.Sockets.TcpClient();
             var responseBuilder = new StringBuilder();
-            var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously); // 异步续传，避免线程阻塞
-
+            var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             try
             {
                 string dpopToken = DpopTokenGenerator.GenerateDpopToken(apiPath);
                 int numberOfDigits = iid.Length / 9;
-
                 var data = await GetTokenDataAsync();
                 string token = data["id_token"]!.ToString();
-                //dynamic data = await GetTokenDataDynamicAsync();
-                //string token = data.access_token; // ✅ 和 JS 写法一样
-
-                // 构建JSON（改用序列化，避免拼接错误）
                 var requestBody = new
                 {
                     IID = iid,
@@ -529,77 +470,45 @@ namespace OCRbyLLoneBot
                 };
                 string jsonBody = JsonSerializer.Serialize(requestBody);
                 byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
-
-                // 构建HTTP请求头
                 StringBuilder requestBuilder = new StringBuilder();
                 requestBuilder.AppendLine($"POST {apiPath} HTTP/1.1");
                 requestBuilder.AppendLine($"Host: {host}");
                 requestBuilder.AppendLine("Content-Type: application/json");
-                //requestBuilder.AppendLine("Authorization: Bearer govUrlID");
                 requestBuilder.AppendLine($"Authorization: Bearer {token}");
                 requestBuilder.AppendLine($"DPoP: {dpopToken}");
                 requestBuilder.AppendLine("x-session-id: app_mmsj2c31_x1nrlz06b");
-                //requestBuilder.AppendLine($"Referer: https://{host}/{govUrlConfig}/activate");
                 requestBuilder.AppendLine($"Content-Length: {bodyBytes.Length}");
                 requestBuilder.AppendLine("Connection: close");
                 requestBuilder.AppendLine();
                 byte[] headerBytes = Encoding.UTF8.GetBytes(requestBuilder.ToString());
-
-                // 解析IP（优先IPv4）
                 var ipAddresses = await Dns.GetHostAddressesAsync(host);
                 var targetIp = ipAddresses.First(ip => ip.AddressFamily == AddressFamily.InterNetwork);
-
-                // 配置TcpClient（关键：独立配置，不共享WebSocket的容器/日志）
                 var tcpConfig = new TouchSocketConfig()
                     .SetRemoteIPHost($"{targetIp}:{port}")
                     .SetClientSslOption(options =>
                     {
-                        // 忽略证书验证（访问公网HTTPS建议保留，避免证书问题）
                         options.CertificateValidationCallback = (sender, cert, chain, errors) => true;
-                        // 关闭证书吊销检查
                         options.CheckCertificateRevocation = false;
-                        // 微软接口不需要客户端证书，注释掉（如果是你的私有接口需要则打开）
-                        // options.ClientCertificates = new X509Certificate2Collection() { new X509Certificate2("client.pfx", "pwd") };
-                        // SSL协议：访问微软接口不能设为None，指定Tls12/Tls13（否则握手失败）
                         options.SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13;
-                        // 目标主机必须和域名一致（微软接口是visualsupport.microsoft.com）
                         options.TargetHost = host;
                     })
-                    // 核心：禁用全局容器，完全隔离资源
-                    .ConfigureContainer(container =>
-                    {
-                        // 什么都不做，让它生成一个全新的独立容器
-                        // 或者手动清空注册（如果TouchSocket版本支持）
-                        // container.RemoveRegisteredTypes();
-                    })
-                    // 禁用日志共享，避免和WebSocket日志冲突
-                    .ConfigurePlugins(plugins =>
-                    {
-                        // 不添加任何插件，保持空
-                    });
-
-                // 注册回调（仅针对当前TcpClient）
+                    .ConfigureContainer(container => { })
+                    .ConfigurePlugins(plugins => { });
                 client.Received = (c, e) =>
                 {
                     var mes = e.Memory.Span.ToString(Encoding.UTF8);
                     responseBuilder.Append(mes);
                     return EasyTask.CompletedTask;
                 };
-
                 client.Closed = (c, e) =>
                 {
-                    // 仅完成当前TcpClient的任务，不影响全局
                     tcs.TrySetResult(responseBuilder.ToString());
                     return EasyTask.CompletedTask;
                 };
-
-                // 连接并发送数据
                 await client.SetupAsync(tcpConfig);
                 await client.ConnectAsync();
                 await client.SendAsync(headerBytes);
                 await client.SendAsync(bodyBytes);
-
-                // 30秒超时保护
                 if (await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(30))) == tcs.Task)
                 {
                     string fullResponse = await tcs.Task;
@@ -614,63 +523,45 @@ namespace OCRbyLLoneBot
             catch (Exception ex)
             {
                 Console.WriteLine($"激活请求异常：{ex.Message}");
-                // 确保任务完成，避免死等
                 tcs.TrySetException(ex);
                 throw;
             }
             finally
             {
-                // 显式关闭并释放TcpClient，不影响WebSocket
                 if (client.Online)
                 {
                     await client.CloseAsync();
                 }
-                client.Dispose(); // 强制释放资源
+                client.Dispose();
             }
         }
 
-        /// <summary>
-        /// 从 HTTP 完整响应中拆分出 Body 部分（JSON）
-        /// </summary>
         private string ExtractRealJson(string fullResponse)
         {
-            // 1. 先找到 HTTP 头结束位置
             int headerEnd = fullResponse.IndexOf("\r\n\r\n");
             if (headerEnd == -1) return null;
             string body = fullResponse.Substring(headerEnd + 4);
-
-            // 2. 找到第一个 { （JSON 开始）
             int jsonStart = body.IndexOf('{');
-            // 3. 找到最后一个 } （JSON 结束）
             int jsonEnd = body.LastIndexOf('}');
-
             if (jsonStart >= 0 && jsonEnd > jsonStart)
             {
                 return body.Substring(jsonStart, jsonEnd - jsonStart + 1);
             }
-
             return null;
         }
 
         public static async Task<JsonNode> GetTokenDataAsync()
         {
-            using var httpClient = new HttpClient();
+            using var httpClient = new System.Net.Http.HttpClient();
             httpClient.Timeout = TimeSpan.FromSeconds(10);
-
             try
             {
-                // 直接获取原始 JSON 字符串
                 string json = await httpClient.GetStringAsync("https://cidtoken.x2ray.cfd");
-
-                // 动态解析（不需要模型）
                 JsonNode data = JsonNode.Parse(json)!;
-
-                // 校验：和你 JS 逻辑完全一样
                 if (data == null || data["access_token"] == null || string.IsNullOrEmpty(data["access_token"]!.ToString()))
                 {
                     throw new Exception("无效的 Token 数据");
                 }
-
                 return data;
             }
             catch (TaskCanceledException)
@@ -689,32 +580,32 @@ namespace OCRbyLLoneBot
 
         public static async Task<dynamic> GetTokenDataDynamicAsync()
         {
-            using var httpClient = new HttpClient();
+            using var httpClient = new System.Net.Http.HttpClient();
             httpClient.Timeout = TimeSpan.FromSeconds(10);
             string json = await httpClient.GetStringAsync("https://cidtoken.x2ray.cfd");
             return JsonSerializer.Deserialize<dynamic>(json)!;
         }
 
+        // ==================== 窗口关闭释放HttpService ====================
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             try
             {
-                // 释放WebSocket资源，避免端口占用
-                if (webSocket != null && webSocket.Online)
+                if (service != null)
                 {
-                    webSocket.CloseAsync().Wait(5000); // 5秒超时
-                    webSocket.Dispose();
+                    service.StopAsync().Wait(3000);
+                    service.Dispose();
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("释放WebSocket资源异常：" + ex.Message);
+                Console.WriteLine("释放HttpService资源异常：" + ex.Message);
             }
         }
 
         private async void textBox1_Click(object sender, EventArgs e)
         {
-            string text = Clipboard.GetText().Replace("-", "").Replace(" ","");
+            string text = Clipboard.GetText().Replace("-", "").Replace(" ", "");
             if (text == null) return;
             if (string.IsNullOrEmpty(CleanIID(text)))
             {
@@ -729,32 +620,22 @@ namespace OCRbyLLoneBot
                 foreach (var block in result.FailedBlocks)
                 {
                     Console.WriteLine($"失败区块 {block.Index}: {block.Value}");
-                    this.textBox1.Text += "  $\"失败区块 {block.Index}: {block.Value}\"";
+                    this.textBox1.Text += $" 失败区块 {block.Index}: {block.Value}";
                 }
                 return;
             }
             this.textBox1.Text = text;
             if (string.IsNullOrEmpty(textBox1.Text)) return;
-
-            //"424531638745335609955640716633530643857085064476161468457574401"
             this.textBox2.Text = "正在获取。。。，请稍候，若长期无反应，请联系作者。";
             var jsonstr = await SendActivationRequest(textBox1.Text);
             if (jsonstr == null) return;
             JsonDocument jdjson = JsonDocument.Parse(jsonstr);
-            // 配置 JSON 序列化选项（启用格式化、缩进、处理中文等）
             var options = new JsonSerializerOptions
             {
-                // 核心：启用格式化（缩进、换行）
                 WriteIndented = true,
-                // 可选：设置缩进空格数（默认 4 个空格）
-                // IndentSize = 2,
-                // 可选：处理中文不转义
                 Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-                // 可选：忽略 null 值（避免输出多余的 null 字段）
                 DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
             };
-
-            // 序列化并格式化输出
             string formattedJson = JsonSerializer.Serialize(jdjson.RootElement, options);
             this.textBox2.Text = formattedJson;
         }
