@@ -113,7 +113,7 @@ namespace OCRbyLLoneBot
             {
                 await service.SetupAsync(config);
                 await service.StartAsync();
-                service.Logger.Info("WebSocket服务器已启动，地址: ws://127.0.0.1:7780/ws");
+                service.Logger.Info("WebSocket服务器已启动，地址: ws://127.0.0.1:7781/ws");
             }
             catch (Exception ex)
             {
