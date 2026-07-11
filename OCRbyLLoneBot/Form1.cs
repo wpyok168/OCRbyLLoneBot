@@ -509,7 +509,7 @@ namespace OCRbyLLoneBot
                 int numberOfDigits = iid.Length / 9;
 
                 var data = await GetTokenDataAsync();
-                string token = data["access_token"]!.ToString();
+                string token = data["id_token"]!.ToString();
                 //dynamic data = await GetTokenDataDynamicAsync();
                 //string token = data.access_token; // ✅ 和 JS 写法一样
 
