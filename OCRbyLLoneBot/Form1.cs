@@ -181,7 +181,7 @@ namespace OCRbyLLoneBot
                     // OCR未提取到合法IID，生成标准化错误提示
                     var fullCheck = IidValidator.ValidateIID(fullOcrText);
                     var errInfo = IidValidator.GetErrorText(fullCheck);
-                    string errReply = $"❌ 图片识别的IID校验失败\n【OCR完整文本】\n提示：{errInfo.MainText}\n详情：{errInfo.DetailText}";
+                    string errReply = $"❌ 图片识别的IID校验失败\n【OCR完整文本】\n提示：{errInfo.MainText}\n详情：{errInfo.DetailText}\nOCR文本：{fullOcrText}";
                     // 发送错误给用户
                     await SendMsg(msg, errReply);
                     falg = true;
