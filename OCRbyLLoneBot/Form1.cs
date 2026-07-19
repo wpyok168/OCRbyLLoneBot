@@ -136,46 +136,137 @@ namespace OCRbyLLoneBot
         }
 
         // ==================== 下方所有业务逻辑【完全原样不动，无修改】 ====================
+        /// <summary>
+        /// 接收WS推送消息统一处理入口
+        /// 区分OCR图片回调消息 / 普通文字消息，自动提取、校验IID并查询激活信息
+        /// </summary>
+        /// <param name="jsonDocument">LLOneBot推送的原始消息JSON</param>
         private async Task MsgAction(JsonDocument jsonDocument)
         {
+            // 解析基础消息结构体
             RecMsgMode msg = GetRecMsgMode(jsonDocument);
 
-            string iid = string.Empty;
-            string ocrstr = string.Empty;
-            bool falg = false;
-            (StringBuilder, StringBuilder) ocrResult;
-            if (!string.IsNullOrEmpty(msg.Echo))
-            {
-                ocrResult = GetOCRTextConet(jsonDocument);
-                string echo = msg.Echo;
-                msg = ocrResmsgmode.TryGetValue(echo, out var ocrrecMsgMode) ? ocrrecMsgMode : msg;
-                ocrResmsgmode.TryRemove(echo, out _);
-                if (!string.IsNullOrEmpty(ocrResult.Item2.ToString()) && (ocrResult.Item2.ToString().Length == 54 || ocrResult.Item2.ToString().Length == 63))
-                {
-                    iid = CleanIID(ocrResult.Item2.ToString());
-                }
-                else
-                {
-                    ocrstr = ocrResult.Item1.ToString();
-                    falg = true;
-                }
-            }
-            else
-            {
-                iid = CleanIID(msg.RecMsgContent);
-            }
+            string iid = string.Empty;          // 最终校验通过的标准IID
+            string ocrstr = string.Empty;       // OCR识别失败时返回给用户的原图文本
+            bool falg = false;                  // 标记OCR是否未识别到合法IID
+            (StringBuilder, StringBuilder) ocrResult; // OCR返回：完整识别文本、提取的数字串
 
-            if (falg)
+            if (string.IsNullOrEmpty(msg.Echo) && !string.IsNullOrEmpty(msg.ImageFile))
             {
-                await SendMsg(msg, ocrstr);
                 return;
             }
 
+            #region OCR图片回调分支（带echo标识，图片识别结果返回）
+            if (!string.IsNullOrEmpty(msg.Echo))
+            {
+                // 获取OCR识别结果
+                ocrResult = GetOCRTextConet(jsonDocument);
+                string echo = msg.Echo;
+                // 根据echo取回发起OCR时缓存的原始消息对象
+                msg = ocrResmsgmode.TryGetValue(echo, out var ocrrecMsgMode) ? ocrrecMsgMode : msg;
+                // 清理缓存，防止内存堆积
+                ocrResmsgmode.TryRemove(echo, out _);
+
+                // 获取OCR全部原始识别文本，送入工具一站式清洗+提取IID
+                string fullOcrText = ocrResult.Item1.ToString();
+                List<string> validIidList = IidValidator.GetValidIidFromOcr(fullOcrText);
+
+                if (validIidList.Any())
+                {
+                    // 取第一个校验完全合法的IID
+                    iid = validIidList.First();
+                }
+                else
+                {
+                    // OCR未提取到合法IID，生成标准化错误提示
+                    var fullCheck = IidValidator.ValidateIID(fullOcrText);
+                    var errInfo = IidValidator.GetErrorText(fullCheck);
+                    string errReply = $"❌ 图片识别的IID校验失败\n【OCR完整文本】\n提示：{errInfo.MainText}\n详情：{errInfo.DetailText}";
+                    // 发送错误给用户
+                    await SendMsg(msg, errReply);
+                    falg = true;
+                }
+            }
+            
+            #endregion
+
+            #region 普通文字消息分支（无echo，用户直接发文字）
+            else
+            {
+                string msgText = msg.RecMsgContent;
+                // 提取带横杠/空格分段格式的候选IID（7位/6位9段标准排版）
+                var splitCandidates = IidValidator.ExtractSplitIidWithSeparator(msgText);
+                string targetIid = string.Empty;
+                // 用于汇总多条IID校验失败的错误信息
+                StringBuilder errorSb = new StringBuilder();
+
+                // 遍历所有分段格式候选IID，逐个校验
+                if (splitCandidates.Any())
+                {
+                    foreach (var candidate in splitCandidates)
+                    {
+                        var res = IidValidator.ValidateIID(candidate);
+                        if (res.Valid)
+                        {
+                            // 找到第一条合法IID直接使用，终止循环
+                            targetIid = res.CleanedIid;
+                            break;
+                        }
+                        // 当前候选IID校验失败，拼接格式化错误信息
+                        var errInfo = IidValidator.GetErrorText(res);
+                        errorSb.AppendLine($"【IID】{candidate}");
+                        errorSb.AppendLine($"提示：{errInfo.MainText}");
+                        errorSb.AppendLine($"详情：{errInfo.DetailText}");
+                        errorSb.AppendLine("------------------------");
+                    }
+                }
+
+                // 兜底逻辑：未匹配到标准分段IID时，全文整体清洗校验
+                if (string.IsNullOrEmpty(targetIid))
+                {
+                    var fullRes = IidValidator.ValidateIID(msgText);
+                    if (fullRes.Valid)
+                    {
+                        targetIid = fullRes.CleanedIid;
+                    }
+                    else
+                    {
+                        // 全文校验同样失败，追加全局校验错误
+                        var errInfo = IidValidator.GetErrorText(fullRes);
+                        errorSb.AppendLine("【全文内容整体校验】");
+                        errorSb.AppendLine($"提示：{errInfo.MainText}");
+                        errorSb.AppendLine($"详情：{errInfo.DetailText}");
+                    }
+                }
+
+                iid = targetIid;
+
+                // 无任何合法IID，统一汇总错误回复并终止流程，不请求激活接口
+                if (string.IsNullOrEmpty(iid) && errorSb.Length > 0)
+                {
+                    string reply = "❌ IID校验不通过，请检查格式后重新发送\n\n" + errorSb.ToString().TrimEnd();
+                    await SendMsg(msg, reply);
+                    return;
+                }
+            }
+            #endregion
+
+            // OCR识别无合法IID，直接返回识别文本，不执行IID查询
+            if (falg)
+            {
+                return;
+            }
+
+            // 存在合法IID，调用微软IID激活验证接口查询信息
             if (!string.IsNullOrEmpty(iid))
             {
                 var response = await SendActivationRequest(iid);
                 JsonDocument jdjson = JsonDocument.Parse(response);
                 var root = jdjson.RootElement;
+
+                /// <summary>
+                /// 安全读取JSON指定字段，兼容字符串/数字/空值
+                /// </summary>
                 string GetJsonProperty(JsonElement element, string propName)
                 {
                     if (element.TryGetProperty(propName, out JsonElement propEle))
@@ -191,6 +282,7 @@ namespace OCRbyLLoneBot
                     return "字段不存在";
                 }
 
+                // 组装返回给用户的IID详情文本
                 var sb = new System.Text.StringBuilder();
                 sb.AppendLine("IID：" + GetJsonProperty(root, "iid"));
                 sb.AppendLine("CID：" + GetJsonProperty(root, "cid"));
@@ -198,20 +290,24 @@ namespace OCRbyLLoneBot
                 sb.AppendLine("PID：" + GetJsonProperty(root, "pid"));
                 sb.AppendLine("maxInstallCount：" + GetJsonProperty(root, "maxInstallCount"));
 
+                // 过滤默认无用提示文案，仅展示异常message
                 string message = GetJsonProperty(root, "message");
-                if (!string.Equals(
-                        message,
-                        "Clearinghouse Supplied Confirmation ID",
-                        StringComparison.OrdinalIgnoreCase) &&
-                    message != "字段不存在" &&
-                    message != "字段为空")
-                {
-                    sb.AppendLine("message：" + message);
-                }
+                //if (!string.Equals(
+                //        message,
+                //        "Clearinghouse Supplied Confirmation ID",
+                //        StringComparison.OrdinalIgnoreCase) &&
+                //    message != "字段不存在" &&
+                //    message != "字段为空")
+                //{
+                //    sb.AppendLine("message：" + message);
+                //}
+                sb.AppendLine("message：" + message);
 
                 string sendmsg = sb.ToString().TrimEnd();
                 await SendMsg(msg, sendmsg);
             }
+
+            // 黑白名单指令拦截（加黑/移黑/解黑），发送空消息阻断流程
             if (msg.RecMsgContent != null)
             {
                 if (msg.RecMsgContent.Contains("加黑") || msg.RecMsgContent.Contains("移黑") || msg.RecMsgContent.Contains("解黑"))
@@ -299,15 +395,66 @@ namespace OCRbyLLoneBot
             await SendServerMsg(rec.Self_ID.ToString(), msg1);
         }
 
+        //private (StringBuilder, StringBuilder) GetOCRTextConet(JsonDocument recmsgDoc)
+        //{
+        //    StringBuilder listtext = new StringBuilder();
+        //    StringBuilder iidgroup = new StringBuilder();
+        //    int matchCount = 0;
+        //    if (recmsgDoc == null)
+        //    {
+        //        return (listtext, iidgroup);
+        //    }
+        //    if (recmsgDoc.RootElement.TryGetProperty("data", out JsonElement data) &&
+        //        data.TryGetProperty("texts", out JsonElement texts) &&
+        //        texts.ValueKind == JsonValueKind.Array)
+        //    {
+        //        foreach (var item in texts.EnumerateArray())
+        //        {
+        //            if (item.TryGetProperty("text", out JsonElement textElement) &&
+        //                textElement.ValueKind == JsonValueKind.String)
+        //            {
+        //                string text = textElement.GetString() ?? string.Empty;
+        //                listtext.AppendLine(text);
+        //            }
+        //        }
+        //    }
+        //    if (matchCount < 2)
+        //    {
+        //        matchCount++;
+        //        var sixDigitMatches = Regex.Matches(listtext.ToString(), @"\b\d{6}\b");
+        //        iidgroup.Clear();
+        //        foreach (Match match in sixDigitMatches)
+        //        {
+        //            iidgroup.Append(match.Value);
+        //        }
+        //    }
+        //    if (iidgroup.Length != 54 && matchCount < 2)
+        //    {
+        //        matchCount++;
+        //        var sevenDigitMatches = Regex.Matches(listtext.ToString(), @"\b\d{7}\b");
+        //        iidgroup.Clear();
+        //        foreach (Match match in sevenDigitMatches)
+        //        {
+        //            iidgroup.Append(match.Value);
+        //        }
+        //    }
+        //    return (listtext, iidgroup);
+        //}
+
+        /// <summary>
+        /// 解析OCR返回文本，输出完整识别文本 + 提取到的合法IID（复用IidValidator全套OCR清洗逻辑）
+        /// </summary>
         private (StringBuilder, StringBuilder) GetOCRTextConet(JsonDocument recmsgDoc)
         {
             StringBuilder listtext = new StringBuilder();
             StringBuilder iidgroup = new StringBuilder();
-            int matchCount = 0;
+
             if (recmsgDoc == null)
             {
                 return (listtext, iidgroup);
             }
+
+            // 1. 拼接全部OCR原始文本到listtext（保留原有逻辑不变）
             if (recmsgDoc.RootElement.TryGetProperty("data", out JsonElement data) &&
                 data.TryGetProperty("texts", out JsonElement texts) &&
                 texts.ValueKind == JsonValueKind.Array)
@@ -322,38 +469,21 @@ namespace OCRbyLLoneBot
                     }
                 }
             }
-            if (matchCount < 2)
+
+            string fullOcrRaw = listtext.ToString();
+            // 2. 使用工具类一站式清洗、提取、校验所有合法IID
+            List<string> validIidList = IidValidator.GetValidIidFromOcr(fullOcrRaw);
+
+            // 3. 取第一个合法IID填入iidgroup，无则保持空
+            if (validIidList.Any())
             {
-                matchCount++;
-                var sixDigitMatches = Regex.Matches(listtext.ToString(), @"\b\d{6}\b");
-                iidgroup.Clear();
-                foreach (Match match in sixDigitMatches)
-                {
-                    iidgroup.Append(match.Value);
-                }
+                iidgroup.Append(validIidList.First());
             }
-            if (iidgroup.Length != 54 && matchCount < 2)
-            {
-                matchCount++;
-                var sevenDigitMatches = Regex.Matches(listtext.ToString(), @"\b\d{7}\b");
-                iidgroup.Clear();
-                foreach (Match match in sevenDigitMatches)
-                {
-                    iidgroup.Append(match.Value);
-                }
-            }
+
+            // 不再使用原来matchCount、6位/7位分段拼接逻辑，全部移除
             return (listtext, iidgroup);
         }
 
-        public static string CleanIID(string iid)
-        {
-            if (string.IsNullOrEmpty(iid))
-                return string.Empty;
-            string cleaned = Regex.Replace(iid, @"\D", "");
-            if (cleaned.Length == 54 || cleaned.Length == 63)
-                return cleaned;
-            return string.Empty;
-        }
 
         private async Task SendMsg(RecMsgMode rec, string sendmsg, string type = "server")
         {
@@ -648,29 +778,22 @@ namespace OCRbyLLoneBot
 
         private async void textBox1_Click(object sender, EventArgs e)
         {
-            string text = Clipboard.GetText().Replace("-", "").Replace(" ", "");
-            if (text == null) return;
-            if (string.IsNullOrEmpty(CleanIID(text)))
+            string rawText = Clipboard.GetText();
+            var valResult = IidValidator.ValidateIID(rawText);
+
+            if (!valResult.Valid)
             {
-                this.textBox1.Text = "剪贴板内容不合法，请复制有效的IID后再点击";
+                // 新增：一键获取格式化中文错误，替代手动拼接字符串
+                var errInfo = IidValidator.GetErrorText(valResult);
+                this.textBox1.Text = $"{errInfo.MainText}\n{errInfo.DetailText}";
                 return;
             }
-            var result = IidValidator.ValidateIID(text);
-            if (!result.Valid)
-            {
-                Console.WriteLine($"错误: {result.Error}");
-                this.textBox1.Text = $"错误: {result.Error}";
-                foreach (var block in result.FailedBlocks)
-                {
-                    Console.WriteLine($"失败区块 {block.Index}: {block.Value}");
-                    this.textBox1.Text += $" 失败区块 {block.Index}: {block.Value}";
-                }
-                return;
-            }
-            this.textBox1.Text = text;
-            if (string.IsNullOrEmpty(textBox1.Text)) return;
+
+            string standardIid = valResult.CleanedIid;
+            this.textBox1.Text = standardIid;
             this.textBox2.Text = "正在获取。。。，请稍候，若长期无反应，请联系作者。";
-            var jsonstr = await SendActivationRequest(textBox1.Text);
+
+            var jsonstr = await SendActivationRequest(standardIid);
             if (jsonstr == null) return;
             JsonDocument jdjson = JsonDocument.Parse(jsonstr);
             var options = new JsonSerializerOptions
