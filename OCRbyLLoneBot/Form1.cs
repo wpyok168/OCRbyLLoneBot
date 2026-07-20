@@ -24,9 +24,16 @@ namespace OCRbyLLoneBot
         //private readonly ConcurrentDictionary<IWebSocketClient, bool> BotWebSocketMap = new ConcurrentDictionary<IWebSocketClient, bool>();
         private readonly ConcurrentDictionary<IWebSocket, bool> BotWebSocketMap = new ConcurrentDictionary<IWebSocket, bool>();
 
+        // 黑名单JSON文件路径
+        private readonly string _blackConfigPath = Path.Combine(Application.StartupPath, "blacklist_config.json");
+        // 内存缓存黑白名单配置
+        private BotBlackConfig? _blackConfig;
+
         public Form1()
         {
             InitializeComponent();
+            // 程序启动加载黑名单配置
+            LoadBlackConfig();
         }
 
         private void Form1_Load(object sender, EventArgs e)
@@ -145,6 +152,80 @@ namespace OCRbyLLoneBot
         {
             // 解析基础消息结构体
             RecMsgMode msg = GetRecMsgMode(jsonDocument);
+
+            // 核心：机器人账号发送的消息直接拦截，不处理不回复（解决互刷）
+            if (IsInBlackList(msg.UserID))
+            {
+                return;
+            }
+
+            // 黑白名单指令拦截（加黑/移黑/解黑），发送空消息阻断流程
+            //if (msg.RecMsgContent != null)
+            //{
+            //    if (msg.RecMsgContent.Contains("加黑") || msg.RecMsgContent.Contains("移黑") || msg.RecMsgContent.Contains("解黑"))
+            //    {
+            //        await SendMsg(msg, "");
+            //    }
+            //}
+
+            #region 黑白名单指令处理（管理员权限控制）
+            if (!string.IsNullOrEmpty(msg.RecMsgContent))
+            {
+                string text = msg.RecMsgContent.Trim();
+                // 正则匹配指令：加黑/解黑 + QQ数字
+                Match addBlockMatch = Regex.Match(text, @"^加黑(\d+)");
+                Match removeBlockMatch = Regex.Match(text, @"^(移黑|解黑)(\d+)");
+
+                if (addBlockMatch.Success || removeBlockMatch.Success)
+                {
+                    // 非管理员直接返回无权限提示
+                    if (!IsAdmin(msg.UserID))
+                    {
+                        await SendMsg(msg, "❌ 权限不足，仅管理员可执行加黑/解黑操作");
+                        return;
+                    }
+
+                    long targetQq;
+                    string replyMsg = string.Empty;
+                    if (addBlockMatch.Success)
+                    {
+                        targetQq = long.Parse(addBlockMatch.Groups[1].Value);
+                        if (_blackConfig?.AllBlackQqList?.Contains(targetQq) == true)
+                        {
+                            replyMsg = $"✅ QQ {targetQq} 已在黑名单内，无需重复添加";
+                        }
+                        else
+                        {
+                            _blackConfig?.AllBlackQqList.Add(targetQq);
+                            SaveBlackConfig(); // 写入JSON保存
+                            replyMsg = $"✅ 成功将QQ {targetQq} 加入黑名单";
+                        }
+                    }
+                    else
+                    {
+                        targetQq = long.Parse(removeBlockMatch.Groups[2].Value);
+                        // 禁止管理员把机器人自身从黑名单移除（防止机器人互发刷屏）
+                        // 可自行删除此判断，如果允许移出机器人账号
+                        if (targetQq == _blackConfig?.AdminQQ)
+                        {
+                            replyMsg = "⚠️ 不能将管理员账号移出黑名单";
+                        }
+                        else if (_blackConfig?.AllBlackQqList?.Remove(targetQq) == true)
+                        {
+                            SaveBlackConfig();
+                            replyMsg = $"✅ 成功将QQ {targetQq} 移出黑名单";
+                        }
+                        else
+                        {
+                            replyMsg = $"⚠️ QQ {targetQq} 不在黑名单内";
+                        }
+                    }
+                    await SendMsg(msg, replyMsg);
+                    return;
+                }
+            }
+            #endregion
+
 
             string iid = string.Empty;          // 最终校验通过的标准IID
             string ocrstr = string.Empty;       // OCR识别失败时返回给用户的原图文本
@@ -307,14 +388,7 @@ namespace OCRbyLLoneBot
                 await SendMsg(msg, sendmsg);
             }
 
-            // 黑白名单指令拦截（加黑/移黑/解黑），发送空消息阻断流程
-            if (msg.RecMsgContent != null)
-            {
-                if (msg.RecMsgContent.Contains("加黑") || msg.RecMsgContent.Contains("移黑") || msg.RecMsgContent.Contains("解黑"))
-                {
-                    await SendMsg(msg, "");
-                }
-            }
+            
 
             return;
         }
@@ -816,5 +890,42 @@ namespace OCRbyLLoneBot
         {
             Clipboard.SetText(this.textBox2.Text);
         }
+
+
+        //=============================黑名单配置JSON文件读写=============================
+        #region JSON 文件读写工具方法
+        /// <summary>加载JSON黑名单，无文件则生成默认模板</summary>
+        private void LoadBlackConfig()
+        {
+            if (!File.Exists(_blackConfigPath))
+            {
+                // 默认配置：填入管理员QQ、两个机器人QQ到统一黑名单
+                _blackConfig = new BotBlackConfig
+                {
+                    AdminQQ = 414725048, // 你的管理员QQ
+                    AllBlackQqList = new List<long> { 11111111, 22222222 } // 两个机器人QQ
+                };
+                SaveBlackConfig();
+                return;
+            }
+
+            string jsonText = File.ReadAllText(_blackConfigPath, Encoding.UTF8);
+            _blackConfig = JsonSerializer.Deserialize<BotBlackConfig>(jsonText)!;
+        }
+
+        /// <summary>内存配置写入JSON文件持久化</summary>
+        private void SaveBlackConfig()
+        {
+            string jsonText = JsonSerializer.Serialize(_blackConfig, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(_blackConfigPath, jsonText, Encoding.UTF8);
+        }
+
+        /// <summary>判断是否为管理员</summary>
+        private bool IsAdmin(long qq) => _blackConfig != null && qq == _blackConfig.AdminQQ;
+
+        /// <summary>判断QQ是否在黑名单（机器人/封禁用户共用）</summary>
+        private bool IsInBlackList(long qq) => _blackConfig != null && _blackConfig.AllBlackQqList.Contains(qq);
+        #endregion
+
     }
 }
