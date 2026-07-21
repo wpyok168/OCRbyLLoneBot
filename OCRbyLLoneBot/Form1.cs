@@ -301,29 +301,40 @@ namespace OCRbyLLoneBot
                         errorSb.AppendLine("------------------------");
                     }
                 }
-
+                var fullRes = IidValidator.ValidateIID(msgText);
                 // 兜底逻辑：未匹配到标准分段IID时，全文整体清洗校验
                 if (string.IsNullOrEmpty(targetIid))
                 {
-                    var fullRes = IidValidator.ValidateIID(msgText);
                     if (fullRes.Valid)
                     {
                         targetIid = fullRes.CleanedIid;
                     }
                     else
                     {
-                        // 全文校验同样失败，追加全局校验错误
-                        var errInfo = IidValidator.GetErrorText(fullRes);
-                        errorSb.AppendLine("【全文内容整体校验】");
-                        errorSb.AppendLine($"提示：{errInfo.MainText}");
-                        errorSb.AppendLine($"详情：{errInfo.DetailText}");
+
+                        // 空安全判断Error
+                        string? errCode = fullRes.Error;
+                        if (errCode != "not_numeric")
+                        {
+                            var errInfo = IidValidator.GetErrorText(fullRes);
+                            errorSb.AppendLine("【全文内容整体校验】");
+                            errorSb.AppendLine($"提示：{errInfo.MainText}");
+                            errorSb.AppendLine($"详情：{errInfo.DetailText}");
+
+                            // 长度错误直接回复并终止
+                            if (errCode == "invalid_length")
+                            {
+                                await SendMsg(msg, errorSb.ToString().TrimEnd());
+                                return;
+                            }
+                        }
                     }
                 }
 
                 iid = targetIid;
 
                 // 无任何合法IID，统一汇总错误回复并终止流程，不请求激活接口
-                if (string.IsNullOrEmpty(iid) && errorSb.Length > 0)
+                if (string.IsNullOrEmpty(iid) && errorSb.Length > 0 && fullRes.FailedBlocks.Count > 0)
                 {
                     string reply = "❌ IID校验不通过，请检查格式后重新发送\n\n" + errorSb.ToString().TrimEnd();
                     await SendMsg(msg, reply);
