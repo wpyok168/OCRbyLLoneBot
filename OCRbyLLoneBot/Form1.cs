@@ -808,31 +808,44 @@ namespace OCRbyLLoneBot
             return null;
         }
 
+        private static readonly System.Net.Http.HttpClient _tokenHttpClient = new System.Net.Http.HttpClient()
+        {
+            Timeout = TimeSpan.FromSeconds(12)
+        };
+
         public static async Task<JsonNode> GetTokenDataAsync()
         {
-            using var httpClient = new System.Net.Http.HttpClient();
-            httpClient.Timeout = TimeSpan.FromSeconds(10);
+            // TLS设置仍然放在这个方法内部，满足你的需求
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
+
             try
             {
-                string json = await httpClient.GetStringAsync("https://cidtoken.x2ray.cfd");
+                string json = await _tokenHttpClient.GetStringAsync("https://cidtoken.x2ray.cfd");
                 JsonNode data = JsonNode.Parse(json)!;
-                if (data == null || data["access_token"] == null || string.IsNullOrEmpty(data["access_token"]!.ToString()))
+
+                if (data == null || data["id_token"] == null || string.IsNullOrEmpty(data["id_token"]!.ToString()))
                 {
-                    throw new Exception("无效的 Token 数据");
+                    throw new Exception("无效的 Token 数据，返回id_token字段为空");
                 }
                 return data;
             }
             catch (TaskCanceledException)
             {
-                throw new Exception("请求超时");
+                throw new Exception("获取token请求超时");
             }
             catch (HttpRequestException ex)
             {
-                throw new Exception("网络请求失败：" + ex.Message);
+                string innerMsg = ex.InnerException != null ? $" Inner:{ex.InnerException.Message}" : "";
+                throw new Exception($"获取Token接口网络请求失败：{ex.Message}{innerMsg}");
             }
-            catch (JsonException)
+            catch (JsonException ex)
             {
-                throw new Exception("解析 JSON 失败");
+                throw new Exception($"Token接口JSON解析失败：{ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                string innerMsg = ex.InnerException != null ? $" Inner:{ex.InnerException.Message}" : "";
+                throw new Exception($"获取Token未知异常：{ex.Message}{innerMsg}");
             }
         }
 
