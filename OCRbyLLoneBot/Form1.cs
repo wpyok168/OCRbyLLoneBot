@@ -377,7 +377,8 @@ namespace OCRbyLLoneBot
                 // 组装返回给用户的IID详情文本
                 var sb = new System.Text.StringBuilder();
                 sb.AppendLine("IID：" + GetJsonProperty(root, "iid"));
-                sb.AppendLine("CID：" + GetJsonProperty(root, "cid"));
+                sb.AppendLine("CID：" + GetJsonProperty(root, "cid"));//FormatActivationId(raw1, separator: "-")
+                sb.AppendLine("CID：" + FormatActivationId(GetJsonProperty(root, "cid"), separator: "-"));
                 sb.AppendLine("productName：" + GetJsonProperty(root, "productName"));
                 sb.AppendLine("PID：" + GetJsonProperty(root, "pid"));
                 sb.AppendLine("maxInstallCount：" + GetJsonProperty(root, "maxInstallCount"));
@@ -399,10 +400,36 @@ namespace OCRbyLLoneBot
                 await SendMsg(msg, sendmsg);
             }
 
-            
-
             return;
         }
+
+        /// <summary>
+        /// 格式化 Windows 激活 ID。
+        /// 自动剥离输入中已有的分隔符(空格/连字符/制表符)，只保留数字后按 groupSize 分组。
+        /// 校验规则：CID = 48 位(8组×6)，IID = 54 位(9组×6)，其他位数抛异常。
+        /// </summary>
+        public static string FormatActivationId(string raw, int groupSize = 6, string separator = " ")
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                throw new ArgumentException("输入不能为空", nameof(raw));
+
+            // 1) 清洗：只保留数字
+            string digits = new string(raw.Where(char.IsDigit).ToArray());
+
+            // 2) 校验：CID 48 位，IID 54 位
+            if (digits.Length is not (48 or 54))
+                throw new ArgumentException(
+                    $"位数不合法：期望 48(CID) 或 54(IID) 位，实际 {digits.Length} 位", nameof(raw));
+
+            if (groupSize <= 0 || digits.Length % groupSize != 0)
+                throw new ArgumentException("分组大小不合法", nameof(groupSize));
+
+            // 3) 分组拼接
+            return string.Join(separator,
+                Enumerable.Range(0, digits.Length / groupSize)
+                          .Select(i => digits.Substring(i * groupSize, groupSize)));
+        }
+
 
         private RecMsgMode GetRecMsgMode(JsonDocument recmsgdic)
         {
