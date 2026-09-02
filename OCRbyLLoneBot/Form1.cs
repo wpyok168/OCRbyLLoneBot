@@ -29,6 +29,8 @@ namespace OCRbyLLoneBot
         // 内存缓存黑白名单配置
         private BotBlackConfig? _blackConfig;
 
+        private readonly System.Threading.Channels.Channel<JsonDocument> _msgQueue = System.Threading.Channels.Channel.CreateUnbounded<JsonDocument>();
+
         public Form1()
         {
             InitializeComponent();
@@ -46,6 +48,7 @@ namespace OCRbyLLoneBot
         // ==================== 完全参照你给的CreateServer示例重写 ====================
         private async void CreateSocket()
         {
+            _ = Task.Run(ConsumeMsgQueueAsync);
             TouchSocketConfig config = new TouchSocketConfig();
 
             config.SetListenIPHosts(7781)
@@ -90,7 +93,8 @@ namespace OCRbyLLoneBot
                              case WSDataType.Text:
                                  string recmsg = e.DataFrame.ToText();
                                  Console.WriteLine(recmsg);
-                                 await MsgAction(JsonDocument.Parse(recmsg));
+                                 //await MsgAction(JsonDocument.Parse(recmsg));
+                                 await _msgQueue.Writer.WriteAsync(JsonDocument.Parse(recmsg)); // 微秒级，不阻塞接收循环
                                  break;
                              case WSDataType.Binary:
                                  byte[] by = e.DataFrame.PayloadData.ToArray();
@@ -130,16 +134,43 @@ namespace OCRbyLLoneBot
             
         }
 
+        private async Task ConsumeMsgQueueAsync()
+        {
+            await foreach (var doc in _msgQueue.Reader.ReadAllAsync())
+            {
+                try { await MsgAction(doc); }
+                catch (Exception ex) { Console.WriteLine($"处理消息异常: {ex.Message}"); }
+                finally { doc.Dispose(); } // 顺带解决 JsonDocument 从未释放的池泄漏
+            }
+        }
+
+
         // ==================== 群发消息适配BotWebSocketMap ====================
+        //private async Task SendServerMsg(string selfId, string msg)
+        //{
+        //    foreach (var wsClient in BotWebSocketMap.Keys)
+        //    {
+        //        if (wsClient.Online)
+        //        {
+        //            await wsClient.SendAsync(msg);
+        //        }
+        //    }
+        //}
         private async Task SendServerMsg(string selfId, string msg)
         {
-            foreach (var wsClient in BotWebSocketMap.Keys)
-            {
-                if (wsClient.Online)
-                {
-                    await wsClient.SendAsync(msg);
-                }
-            }
+            var sends = BotWebSocketMap.Keys
+                .Where(ws => ws.Online)
+                .Select(ws => SafeSendAsync(ws, msg))
+                .ToArray();
+            if (sends.Length == 0) return;
+            // 并发发出，最多等 3 秒，不再被单个慢客户端串行卡死
+            await Task.WhenAny(Task.WhenAll(sends), Task.Delay(TimeSpan.FromSeconds(3)));
+        }
+
+        private static async Task SafeSendAsync(IWebSocket ws, string msg)
+        {
+            try { await ws.SendAsync(msg); }
+            catch (Exception ex) { Console.WriteLine($"发送失败: {ex.Message}"); }
         }
 
         // ==================== 下方所有业务逻辑【完全原样不动，无修改】 ====================
@@ -150,14 +181,24 @@ namespace OCRbyLLoneBot
         /// <param name="jsonDocument">LLOneBot推送的原始消息JSON</param>
         private async Task MsgAction(JsonDocument jsonDocument)
         {
+            // ===== 源头拦截：任何派发动作之前，按原始 JSON 判断 =====
+            bool hasEcho = jsonDocument.RootElement.TryGetProperty("echo", out JsonElement echoEl)
+                           && !string.IsNullOrEmpty(echoEl.GetString());
+            long rawUserId = jsonDocument.RootElement.TryGetProperty("user_id", out JsonElement uidEl)
+                             ? uidEl.GetInt64() : 0;
+            // 聊天消息事件（非 echo 回调）命中黑名单 → 直接掐断：不解析、不派发 OCR、不缓存
+            if (!hasEcho && IsInBlackList(rawUserId))
+            {
+                return;
+            }
             // 解析基础消息结构体
             RecMsgMode msg = GetRecMsgMode(jsonDocument);
 
             // 核心：机器人账号发送的消息直接拦截，不处理不回复（解决互刷）
-            if (IsInBlackList(msg.UserID))
-            {
-                return;
-            }
+            //if (IsInBlackList(msg.UserID))
+            //{
+            //    return;
+            //}
 
             // 黑白名单指令拦截（加黑/移黑/解黑），发送空消息阻断流程
             //if (msg.RecMsgContent != null)
@@ -247,6 +288,12 @@ namespace OCRbyLLoneBot
                 msg = ocrResmsgmode.TryGetValue(echo, out var ocrrecMsgMode) ? ocrrecMsgMode : msg;
                 // 清理缓存，防止内存堆积
                 ocrResmsgmode.TryRemove(echo, out _);
+
+                // 兜底：回调按“原始发送者”再拦一次
+                if (IsInBlackList(msg.UserID))
+                {
+                    return;
+                }
 
                 // 获取OCR全部原始识别文本，送入工具一站式清洗+提取IID
                 string fullOcrText = ocrResult.Item1.ToString();
