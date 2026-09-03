@@ -412,9 +412,9 @@ namespace OCRbyLLoneBot
                     {
                         return propEle.ValueKind switch
                         {
-                            JsonValueKind.String => propEle.GetString() ?? "空字符串",
+                            JsonValueKind.String => propEle.GetString() ?? "NULL",
                             JsonValueKind.Number => propEle.ToString(),
-                            JsonValueKind.Null => "字段为空",
+                            JsonValueKind.Null => "NULL",
                             _ => $"不支持的类型：{propEle.ValueKind}"
                         };
                     }
@@ -425,7 +425,8 @@ namespace OCRbyLLoneBot
                 var sb = new System.Text.StringBuilder();
                 sb.AppendLine("IID：" + GetJsonProperty(root, "iid"));
                 sb.AppendLine("CID：" + GetJsonProperty(root, "cid"));//FormatActivationId(raw1, separator: "-")
-                sb.AppendLine("CID：" + FormatActivationId(GetJsonProperty(root, "cid"), separator: "-"));
+                string c= GetJsonProperty(root, "cid").Equals("NULL") ? "NULL" : FormatActivationId(GetJsonProperty(root, "cid"), separator: "-");
+                sb.AppendLine("CID：" + c);
                 sb.AppendLine("productName：" + GetJsonProperty(root, "productName"));
                 sb.AppendLine("PID：" + GetJsonProperty(root, "pid"));
                 sb.AppendLine("maxInstallCount：" + GetJsonProperty(root, "maxInstallCount"));
@@ -457,8 +458,8 @@ namespace OCRbyLLoneBot
         /// </summary>
         public static string FormatActivationId(string raw, int groupSize = 6, string separator = " ")
         {
-            if (string.IsNullOrWhiteSpace(raw))
-                throw new ArgumentException("输入不能为空", nameof(raw));
+            if (string.IsNullOrWhiteSpace(raw)) return raw;
+                //throw new ArgumentException("输入不能为空", nameof(raw));
 
             // 1) 清洗：只保留数字
             string digits = new string(raw.Where(char.IsDigit).ToArray());
